@@ -19,21 +19,23 @@
  * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
  * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Updated for use with a Teensy Board and its HalfKay bootloader by Timo Sandmann, 2018
  */
 
-#include <Arduino.h>
-#include <stdarg.h>
+
 #include "arm_debug.h"
 
-#include "arm_kinetis_reg.h"  // Actually we just want ARM
+#include <Arduino.h>
+#include <cstdarg>
 
 
-ARMDebug::ARMDebug(unsigned clockPin, unsigned dataPin, LogLevel logLevel)
-    : clockPin(clockPin), dataPin(dataPin), logLevel(logLevel)
-{}
+static constexpr uint32_t WIRE_DELAY_US { 1 }; /**< delay between clock toggles in us */
 
-bool ARMDebug::begin()
-{
+ARMDebug::ARMDebug(const uint8_t clockPin, const uint8_t dataPin, const LogLevel logLevel)
+    : clockPin { clockPin }, dataPin { dataPin }, logLevel { logLevel } {}
+
+bool ARMDebug::begin() {
     pinMode(clockPin, OUTPUT);
     pinMode(dataPin, INPUT_PULLUP);
 
@@ -51,21 +53,23 @@ bool ARMDebug::begin()
     wireWrite(0, 32);
 
     uint32_t idcode;
-    if (!getIDCODE(idcode))
+    if (!getIDCODE(idcode)) {
         return false;
+    }
     log(LOG_NORMAL, "Found ARM processor debug port (IDCODE: %08x)", idcode);
 
-    if (!debugPortPowerup())
+    if (!debugPortPowerup()) {
         return false;
+    }
 
-    if (!initMemPort())
+    if (!initMemPort()) {
         return false;
+    }
 
     return true;
 }
 
-bool ARMDebug::getIDCODE(uint32_t &idcode)
-{
+bool ARMDebug::getIDCODE(uint32_t& idcode) {
     // Retrieve IDCODE
     if (!dpRead(IDCODE, false, idcode)) {
         log(LOG_ERROR, "No ARM processor detected. Check power and cables?");
@@ -75,11 +79,11 @@ bool ARMDebug::getIDCODE(uint32_t &idcode)
     return true;
 }
 
-bool ARMDebug::debugPortPowerup()
-{
+bool ARMDebug::debugPortPowerup() {
     // Initialize CTRL/STAT, request system and debugger power-up
-    if (!dpWrite(CTRLSTAT, false, CSYSPWRUPREQ | CDBGPWRUPREQ))
+    if (!dpWrite(CTRLSTAT, false, CSYSPWRUPREQ | CDBGPWRUPREQ)) {
         return false;
+    }
 
     // Wait for power-up acknowledgment
     uint32_t ctrlstat;
@@ -91,38 +95,39 @@ bool ARMDebug::debugPortPowerup()
     return true;
 }
 
-bool ARMDebug::debugPortReset()
-{
-    // Note: This is an optional feature.
-    // It's implemented on the Cortex-M3 but not the M0+, for example.
+// bool ARMDebug::debugPortReset() {
+//     // Note: This is an optional feature.
+//     // It's implemented on the Cortex-M3 but not the M0+, for example.
 
-    const uint32_t powerup = CSYSPWRUPREQ | CDBGPWRUPREQ;
-    const uint32_t reset_request = powerup | CDBGRSTREQ;
+//     const uint32_t powerup = CSYSPWRUPREQ | CDBGPWRUPREQ;
+//     const uint32_t reset_request = powerup | CDBGRSTREQ;
 
-    // Reset the debug access port
-    if (!dpWrite(CTRLSTAT, false, reset_request))
-        return false;
+//     // Reset the debug access port
+//     if (!dpWrite(CTRLSTAT, false, reset_request)) {
+//         return false;
+//     }
 
-    // Wait for reset acknowledgment
-    uint32_t ctrlstat;
-    if (!dpReadPoll(CTRLSTAT, ctrlstat, CDBGRSTACK, -1)) {
-        log(LOG_ERROR, "ARMDebug: Debug port failed to reset (CTRLSTAT: %08x)", ctrlstat);
-        return false;
-    }
+//     // Wait for reset acknowledgment
+//     uint32_t ctrlstat;
+//     if (!dpReadPoll(CTRLSTAT, ctrlstat, CDBGRSTACK, -1)) {
+//         log(LOG_ERROR, "ARMDebug: Debug port failed to reset (CTRLSTAT: %08x)", ctrlstat);
+//         return false;
+//     }
 
-    // Clear reset request bit (leave power requests on)
-    if (!dpWrite(CTRLSTAT, false, powerup))
-        return false;
+//     // Clear reset request bit (leave power requests on)
+//     if (!dpWrite(CTRLSTAT, false, powerup)) {
+//         return false;
+//     }
 
-    return true;
-}
+//     return true;
+// }
 
-bool ARMDebug::initMemPort()
-{
+bool ARMDebug::initMemPort() {
     // Make sure the default debug access port is an AHB (memory bus) port, like we expect
     uint32_t idr;
-    if (!apRead(MEM_IDR, idr))
+    if (!apRead(MEM_IDR, idr)) {
         return false;
+    }
     if ((idr & 0xF) != 1) {
         log(LOG_ERROR, "ARMDebug: Default access port is not an AHB-AP as expected! (IDR: %08x)", idr);
         return false;
@@ -134,56 +139,56 @@ bool ARMDebug::initMemPort()
     return true;
 }
 
-bool ARMDebug::debugHalt()
-{
-    /*
-     * Enable debug, request a halt, and read back status.
-     *
-     * This part is somewhat timing critical, since we're racing against the watchdog
-     * timer. Avoid memWait() by calling the lower-level interface directly.
-     *
-     * Since this is expected to fail a bunch before succeeding, mute errors temporarily.
-     */
+// bool ARMDebug::debugHalt() {
+//     /*
+//      * Enable debug, request a halt, and read back status.
+//      *
+//      * This part is somewhat timing critical, since we're racing against the watchdog
+//      * timer. Avoid memWait() by calling the lower-level interface directly.
+//      *
+//      * Since this is expected to fail a bunch before succeeding, mute errors temporarily.
+//      */
 
-    unsigned haltRetries = 10000;
-    LogLevel savedLogLevel;
+//     unsigned haltRetries = 10000;
+//     LogLevel savedLogLevel;
+//     uint32_t dhcsr;
+
+//     // Point at the debug halt control/status register. We disable MEM-AP autoincrement,
+//     // and leave TAR pointed at DHCSR for the entire loop.
+//     if (memWriteCSW(CSW_32BIT) && apWrite(MEM_TAR, REG_SCB_DHCSR)) {
+//         setLogLevel(LOG_NONE, savedLogLevel);
+
+//         while (haltRetries) {
+//             haltRetries--;
+
+//             if (!apWrite(MEM_DRW, 0xA05F0003)) {
+//                 continue;
+//             }
+//             if (!apRead(MEM_DRW, dhcsr)) {
+//                 continue;
+//             }
+
+//             if (dhcsr & (1 << 17)) {
+//                 // Halted!
+//                 break;
+//             }
+//         }
+
+//         setLogLevel(savedLogLevel);
+//     }
+
+//     if (!haltRetries) {
+//         log(LOG_ERROR, "ARMDebug: Failed to put CPU in debug halt state. (DHCSR: %08x)", dhcsr);
+//         return false;
+//     }
+
+//     return true;
+// }
+
+bool ARMDebug::regTransactionHandshake() {
+    const uint32_t S_REGRDY = 1 << 16;
     uint32_t dhcsr;
 
-    // Point at the debug halt control/status register. We disable MEM-AP autoincrement,
-    // and leave TAR pointed at DHCSR for the entire loop.
-    if (memWriteCSW(CSW_32BIT) && apWrite(MEM_TAR, REG_SCB_DHCSR)) {
-
-        setLogLevel(LOG_NONE, savedLogLevel);
-
-        while (haltRetries) {
-            haltRetries--;
-
-            if (!apWrite(MEM_DRW, 0xA05F0003))
-                continue;
-            if (!apRead(MEM_DRW, dhcsr))
-                continue;
-
-            if (dhcsr & (1 << 17)) {
-                // Halted!
-                break;
-            }
-        }
-
-        setLogLevel(savedLogLevel);
-    }
-
-    if (!haltRetries) {
-        log(LOG_ERROR, "ARMDebug: Failed to put CPU in debug halt state. (DHCSR: %08x)", dhcsr);
-        return false;
-    }
-
-    return true;
-}
-
-bool ARMDebug::regTransactionHandshake()
-{
-    const uint32_t S_REGRDY = 1<<16;
-    uint32_t dhcsr;
     if (!memLoad(REG_SCB_DHCSR, dhcsr)) {
         // Lower-level communications error
         return false;
@@ -191,39 +196,33 @@ bool ARMDebug::regTransactionHandshake()
     return (dhcsr & S_REGRDY) != 0;
 }
 
-bool ARMDebug::regWrite(unsigned num, uint32_t data)
-{
+bool ARMDebug::regWrite(unsigned num, uint32_t data) {
     const uint32_t write = 0x10000;
     num &= 0xFFFF;
-    return memStore(REG_SCB_DCRDR, data)
-        && memStore(REG_SCB_DCRSR, num | write)
-        && regTransactionHandshake();
+    return memStore(REG_SCB_DCRDR, data) && memStore(REG_SCB_DCRSR, num | write) && regTransactionHandshake();
 }
 
-bool ARMDebug::regRead(unsigned num, uint32_t& data)
-{
+bool ARMDebug::regRead(unsigned num, uint32_t& data) {
     num &= 0xFFFF;
-    return memStore(REG_SCB_DCRSR, num)
-        && regTransactionHandshake()
-        && memLoad(REG_SCB_DCRDR, data);
+    return memStore(REG_SCB_DCRSR, num) && regTransactionHandshake() && memLoad(REG_SCB_DCRDR, data);
 }
 
-bool ARMDebug::memWriteCSW(uint32_t data)
-{
+bool ARMDebug::memWriteCSW(uint32_t data) {
     // Write to the MEM-AP CSW. Duplicate writes are ignored, and the cache is updated.
 
-    if (data == cache.csw)
+    if (data == cache.csw) {
         return true;
+    }
 
-    if (!apWrite(MEM_CSW, data | CSW_DEFAULTS))
+    if (!apWrite(MEM_CSW, data | CSW_DEFAULTS)) {
         return false;
+    }
 
     cache.csw = data;
     return true;
 }
 
-bool ARMDebug::memWait()
-{
+bool ARMDebug::memWait() {
     // Wait for a transaction to complete & the port to be enabled.
 
     uint32_t csw;
@@ -235,44 +234,45 @@ bool ARMDebug::memWait()
     return true;
 }
 
-bool ARMDebug::memStore(uint32_t addr, uint32_t data)
-{
+bool ARMDebug::memStore(uint32_t addr, uint32_t data) {
     return memStore(addr, &data, 1);
 }
 
-bool ARMDebug::memLoad(uint32_t addr, uint32_t &data)
-{
+bool ARMDebug::memLoad(uint32_t addr, uint32_t& data) {
     return memLoad(addr, &data, 1);
 }
 
-bool ARMDebug::memStoreAndVerify(uint32_t addr, uint32_t data)
-{
+bool ARMDebug::memStoreAndVerify(uint32_t addr, uint32_t data) {
     return memStoreAndVerify(addr, &data, 1);
 }
 
-bool ARMDebug::memStoreAndVerify(uint32_t addr, const uint32_t *data, unsigned count)
-{
-    if (!memStore(addr, data, count))
+bool ARMDebug::memStoreAndVerify(uint32_t addr, const uint32_t* data, unsigned count) {
+    if (!memStore(addr, data, count)) {
         return false;
+    }
 
-    if (!memWait())
+    if (!memWait()) {
         return false;
-    if (!apWrite(MEM_TAR, addr))
+    }
+    if (!apWrite(MEM_TAR, addr)) {
         return false;
+    }
 
     while (count) {
         uint32_t readback;
 
-        if (!memWait())
+        if (!memWait()) {
             return false;
-        if (!apRead(MEM_DRW, readback))
+        }
+        if (!apRead(MEM_DRW, readback)) {
             return false;
+        }
 
-        log(readback == *data ? LOG_TRACE_MEM : LOG_ERROR,
-            "MEM Verif [%08x] %08x (expected %08x)", addr, readback, *data);
+        log(readback == *data ? LOG_TRACE_MEM : LOG_ERROR, "MEM Verif [%08x] %08x (expected %08x)", addr, readback, *data);
 
-        if (readback != *data)
+        if (readback != *data) {
             return false;
+        }
 
         data++;
         addr++;
@@ -282,22 +282,26 @@ bool ARMDebug::memStoreAndVerify(uint32_t addr, const uint32_t *data, unsigned c
     return true;
 }
 
-bool ARMDebug::memStore(uint32_t addr, const uint32_t *data, unsigned count)
-{
-    if (!memWait())
+bool ARMDebug::memStore(uint32_t addr, const uint32_t* data, unsigned count) {
+    if (!memWait()) {
         return false;
-    if (!memWriteCSW(CSW_32BIT | CSW_ADDRINC_SINGLE))
+    }
+    if (!memWriteCSW(CSW_32BIT | CSW_ADDRINC_SINGLE)) {
         return false;
-    if (!apWrite(MEM_TAR, addr))
+    }
+    if (!apWrite(MEM_TAR, addr)) {
         return false;
+    }
 
     while (count) {
         log(LOG_TRACE_MEM, "MEM Store [%08x] %08x", addr, *data);
 
-        if (!memWait())
+        if (!memWait()) {
             return false;
-        if (!apWrite(MEM_DRW, *data))
+        }
+        if (!apWrite(MEM_DRW, *data)) {
             return false;
+        }
 
         data++;
         addr++;
@@ -307,20 +311,24 @@ bool ARMDebug::memStore(uint32_t addr, const uint32_t *data, unsigned count)
     return true;
 }
 
-bool ARMDebug::memLoad(uint32_t addr, uint32_t *data, unsigned count)
-{
-    if (!memWait())
+bool ARMDebug::memLoad(uint32_t addr, uint32_t* data, unsigned count) {
+    if (!memWait()) {
         return false;
-    if (!memWriteCSW(CSW_32BIT | CSW_ADDRINC_SINGLE))
+    }
+    if (!memWriteCSW(CSW_32BIT | CSW_ADDRINC_SINGLE)) {
         return false;
-    if (!apWrite(MEM_TAR, addr))
+    }
+    if (!apWrite(MEM_TAR, addr)) {
         return false;
+    }
 
     while (count) {
-        if (!memWait())
+        if (!memWait()) {
             return false;
-        if (!apRead(MEM_DRW, *data))
+        }
+        if (!apRead(MEM_DRW, *data)) {
             return false;
+        }
 
         log(LOG_TRACE_MEM, "MEM Load  [%08x] %08x", addr, *data);
 
@@ -332,14 +340,16 @@ bool ARMDebug::memLoad(uint32_t addr, uint32_t *data, unsigned count)
     return true;
 }
 
-bool ARMDebug::memStoreByte(uint32_t addr, uint8_t data)
-{
-    if (!memWait())
+bool ARMDebug::memStoreByte(uint32_t addr, uint8_t data) {
+    if (!memWait()) {
         return false;
-    if (!memWriteCSW(CSW_8BIT))
+    }
+    if (!memWriteCSW(CSW_8BIT)) {
         return false;
-    if (!apWrite(MEM_TAR, addr))
+    }
+    if (!apWrite(MEM_TAR, addr)) {
         return false;
+    }
 
     log(LOG_TRACE_MEM, "MEM Store [%08x] %02x", addr, data);
 
@@ -349,17 +359,20 @@ bool ARMDebug::memStoreByte(uint32_t addr, uint8_t data)
     return apWrite(MEM_DRW, word);
 }
 
-bool ARMDebug::memLoadByte(uint32_t addr, uint8_t &data)
-{
+bool ARMDebug::memLoadByte(uint32_t addr, uint8_t& data) {
     uint32_t word;
-    if (!memWait())
+    if (!memWait()) {
         return false;
-    if (!memWriteCSW(CSW_8BIT))
+    }
+    if (!memWriteCSW(CSW_8BIT)) {
         return false;
-    if (!apWrite(MEM_TAR, addr))
+    }
+    if (!apWrite(MEM_TAR, addr)) {
         return false;
-    if (!apRead(MEM_DRW, word))
+    }
+    if (!apRead(MEM_DRW, word)) {
         return false;
+    }
 
     // Select the proper lane
     data = word >> ((addr & 3) << 3);
@@ -368,14 +381,16 @@ bool ARMDebug::memLoadByte(uint32_t addr, uint8_t &data)
     return true;
 }
 
-bool ARMDebug::memStoreHalf(uint32_t addr, uint16_t data)
-{
-    if (!memWait())
+bool ARMDebug::memStoreHalf(uint32_t addr, uint16_t data) {
+    if (!memWait()) {
         return false;
-    if (!memWriteCSW(CSW_16BIT))
+    }
+    if (!memWriteCSW(CSW_16BIT)) {
         return false;
-    if (!apWrite(MEM_TAR, addr))
+    }
+    if (!apWrite(MEM_TAR, addr)) {
         return false;
+    }
 
     log(LOG_TRACE_MEM, "MEM Store [%08x] %04x", addr, data);
 
@@ -385,17 +400,20 @@ bool ARMDebug::memStoreHalf(uint32_t addr, uint16_t data)
     return apWrite(MEM_DRW, word);
 }
 
-bool ARMDebug::memLoadHalf(uint32_t addr, uint16_t &data)
-{
+bool ARMDebug::memLoadHalf(uint32_t addr, uint16_t& data) {
     uint32_t word;
-    if (!memWait())
+    if (!memWait()) {
         return false;
-    if (!memWriteCSW(CSW_16BIT))
+    }
+    if (!memWriteCSW(CSW_16BIT)) {
         return false;
-    if (!apWrite(MEM_TAR, addr))
+    }
+    if (!apWrite(MEM_TAR, addr)) {
         return false;
-    if (!apRead(MEM_DRW, word))
+    }
+    if (!apRead(MEM_DRW, word)) {
         return false;
+    }
 
     // Select the proper lane
     data = word >> ((addr & 2) << 3);
@@ -404,14 +422,12 @@ bool ARMDebug::memLoadHalf(uint32_t addr, uint16_t &data)
     return true;
 }
 
-bool ARMDebug::apWrite(unsigned addr, uint32_t data)
-{
+bool ARMDebug::apWrite(unsigned addr, uint32_t data) {
     log(LOG_TRACE_AP, "AP  Write [%x] %08x", addr, data);
     return dpSelect(addr) && dpWrite(addr, true, data);
 }
 
-bool ARMDebug::apRead(unsigned addr, uint32_t &data)
-{
+bool ARMDebug::apRead(unsigned addr, uint32_t& data) {
     /*
      * This is really hard to find in the docs, but AP reads are delayed by one transaction.
      * So, the very first AP read will return undefined data, the next AP read returns the
@@ -426,86 +442,85 @@ bool ARMDebug::apRead(unsigned addr, uint32_t &data)
      *   - Better yet, we can do this explicitly with the RDBUFF register in ADI5v1.
      */
 
-    unsigned dummyAddr = (addr & kSelectMask) | MEM_IDR;  // No side effects, same AP and bank
+    // unsigned dummyAddr = (addr & kSelectMask) | MEM_IDR; // No side effects, same AP and bank
     uint32_t dummyData;
 
-    bool result = dpSelect(addr) &&                  // Select AP and register bank
-                  dpRead(addr, true, dummyData) &&   // Initiate read, returns dummy data
-                  dpRead(RDBUFF, false, data);       // Explicitly request read results
+    bool result = dpSelect(addr) && // Select AP and register bank
+        dpRead(addr, true, dummyData) && // Initiate read, returns dummy data
+        dpRead(RDBUFF, false, data); // Explicitly request read results
 
     if (result) {
-        log(LOG_TRACE_AP, "AP  Read  [%x] %08x", addr, data);
+        log(LOG_TRACE_DP, "AP  Read [%x] %08x", addr, data);
     }
 
     return result;
 }
 
-bool ARMDebug::dpReadPoll(unsigned addr, uint32_t &data, uint32_t mask, uint32_t expected, unsigned retries)
-{
+bool ARMDebug::dpReadPoll(unsigned addr, uint32_t& data, uint32_t mask, uint32_t expected, unsigned retries) {
     expected &= mask;
     do {
-        if (!dpRead(addr, false, data))
+        if (!dpRead(addr, false, data)) {
             return false;
-        if ((data & mask) == expected)
+        }
+        if ((data & mask) == expected) {
             return true;
+        }
         yield();
     } while (retries--);
 
-    log(LOG_ERROR, "ARMDebug: Timed out while polling DP ([%08x] & %08x == %08x). Current value: %08x",
-        addr, mask, expected, data);
+    log(LOG_ERROR, "ARMDebug: Timed out while polling DP ([%08x] & %08x == %08x). Current value: %08x", addr, mask, expected, data);
     return false;
 }
 
-bool ARMDebug::apReadPoll(unsigned addr, uint32_t &data, uint32_t mask, uint32_t expected, unsigned retries)
-{
+bool ARMDebug::apReadPoll(unsigned addr, uint32_t& data, uint32_t mask, uint32_t expected, unsigned retries) {
     expected &= mask;
     do {
-        if (!apRead(addr, data))
+        if (!apRead(addr, data)) {
             return false;
-        if ((data & mask) == expected)
+        }
+        if ((data & mask) == expected) {
             return true;
+        }
         yield();
     } while (retries--);
 
-    log(LOG_ERROR, "ARMDebug: Timed out while polling AP ([%08x] & %08x == %08x). Current value: %08x",
-        addr, mask, expected, data);
+    log(LOG_ERROR, "ARMDebug: Timed out while polling AP ([%08x] & %08x == %08x). Current value: %08x", addr, mask, expected, data);
     return false;
 }
 
-bool ARMDebug::memPoll(unsigned addr, uint32_t &data, uint32_t mask, uint32_t expected, unsigned retries)
-{
+bool ARMDebug::memPoll(unsigned addr, uint32_t& data, uint32_t mask, uint32_t expected, unsigned retries) {
     expected &= mask;
     do {
-        if (!memLoad(addr, data))
+        if (!memLoad(addr, data)) {
             return false;
-        if ((data & mask) == expected)
+        }
+        if ((data & mask) == expected) {
             return true;
+        }
         yield();
     } while (retries--);
 
-    log(LOG_ERROR, "ARMDebug: Timed out while polling MEM ([%08x] & %08x == %08x). Current value: %08x",
-        addr, mask, expected, data);
+    log(LOG_ERROR, "ARMDebug: Timed out while polling MEM ([%08x] & %08x == %08x). Current value: %08x", addr, mask, expected, data);
     return false;
 }
 
-bool ARMDebug::memPollByte(unsigned addr, uint8_t &data, uint8_t mask, uint8_t expected, unsigned retries)
-{
+bool ARMDebug::memPollByte(unsigned addr, uint8_t& data, uint8_t mask, uint8_t expected, unsigned retries) {
     expected &= mask;
     do {
-        if (!memLoadByte(addr, data))
+        if (!memLoadByte(addr, data)) {
             return false;
-        if ((data & mask) == expected)
+        }
+        if ((data & mask) == expected) {
             return true;
+        }
         yield();
     } while (retries--);
 
-    log(LOG_ERROR, "ARMDebug: Timed out while polling MEM ([%08x] & %02x == %02x). Current value: %02x",
-        addr, mask, expected, data);
+    log(LOG_ERROR, "ARMDebug: Timed out while polling MEM ([%08x] & %02x == %02x). Current value: %02x", addr, mask, expected, data);
     return false;
 }
 
-bool ARMDebug::dpSelect(unsigned addr)
-{
+bool ARMDebug::dpSelect(unsigned addr) {
     /*
      * Select a new access port and/or a bank. Uses only the high byte and
      * second nybble of 'addr'. This is cached, so redundant dpSelect()s have no effect.
@@ -514,15 +529,15 @@ bool ARMDebug::dpSelect(unsigned addr)
     uint32_t select = addr & kSelectMask;
 
     if (select != cache.select) {
-        if (!dpWrite(SELECT, false, select))
+        if (!dpWrite(SELECT, false, select)) {
             return false;
+        }
         cache.select = select;
     }
     return true;
 }
 
-bool ARMDebug::dpWrite(unsigned addr, bool APnDP, uint32_t data)
-{
+bool ARMDebug::dpWrite(unsigned addr, bool APnDP, uint32_t data) {
     unsigned retries = 10;
     unsigned ack;
     log(LOG_TRACE_DP, "DP  Write [%x:%x] %08x", addr, APnDP, data);
@@ -534,41 +549,38 @@ bool ARMDebug::dpWrite(unsigned addr, bool APnDP, uint32_t data)
         wireWriteTurnaround();
 
         switch (ack) {
-            case 1:     // Success
+            case 1: // Success
                 wireWrite(data, 32);
                 wireWrite(evenParity(data), 1);
                 wireWriteIdle();
                 return true;
 
-            case 2:     // WAIT
+            case 2: // WAIT
                 wireWriteIdle();
                 log(LOG_TRACE_DP, "DP  WAIT response, %d retries left", retries);
                 retries--;
                 break;
 
-            case 4:     // FAULT
+            case 4: // FAULT
                 wireWriteIdle();
-                log(LOG_ERROR, "FAULT response during write (addr=%x APnDP=%d data=%08x)",
-                    addr, APnDP, data);
-                if (!handleFault())
+                log(LOG_ERROR, "FAULT response during write (addr=%x APnDP=%d data=%08x)", addr, APnDP, data);
+                if (!handleFault()) {
                     log(LOG_ERROR, "Error during fault recovery!");
+                }
                 return false;
 
             default:
                 wireWriteIdle();
-                log(LOG_ERROR, "PROTOCOL ERROR response during write (ack=%x addr=%x APnDP=%d data=%08x)",
-                    ack, addr, APnDP, data);
+                log(LOG_ERROR, "PROTOCOL ERROR response during write (ack=%x addr=%x APnDP=%d data=%08x)", ack, addr, APnDP, data);
                 return false;
         }
     } while (retries--);
 
-    log(LOG_ERROR, "WAIT timeout during write (addr=%x APnDP=%d data=%08x)",
-        addr, APnDP, data);
+    log(LOG_ERROR, "WAIT timeout during write (addr=%x APnDP=%d data=%08x)", addr, APnDP, data);
     return false;
 }
 
-bool ARMDebug::dpRead(unsigned addr, bool APnDP, uint32_t &data)
-{
+bool ARMDebug::dpRead(unsigned addr, bool APnDP, uint32_t& data) {
     unsigned retries = 10;
     unsigned ack;
 
@@ -578,13 +590,12 @@ bool ARMDebug::dpRead(unsigned addr, bool APnDP, uint32_t &data)
         ack = wireRead(3);
 
         switch (ack) {
-            case 1:     // Success
+            case 1: // Success
                 data = wireRead(32);
                 if (wireRead(1) != evenParity(data)) {
                     wireWriteTurnaround();
                     wireWriteIdle();
-                    log(LOG_ERROR, "PARITY ERROR during read (addr=%x APnDP=%d data=%08x)",
-                        addr, APnDP, data);
+                    log(LOG_ERROR, "PARITY ERROR during read (addr=%x APnDP=%d data=%08x)", addr, APnDP, data);
                     return false;
                 }
                 wireWriteTurnaround();
@@ -592,19 +603,20 @@ bool ARMDebug::dpRead(unsigned addr, bool APnDP, uint32_t &data)
                 log(LOG_TRACE_DP, "DP  Read  [%x:%x] %08x", addr, APnDP, data);
                 return true;
 
-            case 2:     // WAIT
+            case 2: // WAIT
                 wireWriteTurnaround();
                 wireWriteIdle();
                 log(LOG_TRACE_DP, "DP  WAIT response, %d retries left", retries);
                 retries--;
                 break;
 
-            case 4:     // FAULT
+            case 4: // FAULT
                 wireWriteTurnaround();
                 wireWriteIdle();
                 log(LOG_ERROR, "FAULT response during read (addr=%x APnDP=%d)", addr, APnDP);
-                if (!handleFault())
+                if (!handleFault()) {
                     log(LOG_ERROR, "Error during fault recovery!");
+                }
                 return false;
 
             default:
@@ -619,16 +631,16 @@ bool ARMDebug::dpRead(unsigned addr, bool APnDP, uint32_t &data)
     return false;
 }
 
-bool ARMDebug::handleFault()
-{
+bool ARMDebug::handleFault() {
     // Read CTRLSTAT to see what the fault was, and set appropriate ABORT bits
 
     uint32_t ctrlstat;
     uint32_t abortbits = 0;
     bool dumpRegs = false;
 
-    if (!dpRead(CTRLSTAT, false, ctrlstat))
+    if (!dpRead(CTRLSTAT, false, ctrlstat)) {
         return false;
+    }
 
     if (ctrlstat & (1 << 7)) {
         log(LOG_ERROR, "FAULT: Detected WDATAERR");
@@ -648,8 +660,9 @@ bool ARMDebug::handleFault()
         dumpRegs = true;
     }
 
-    if (abortbits && !dpWrite(ABORT, false, abortbits))
+    if (abortbits && !dpWrite(ABORT, false, abortbits)) {
         return false;
+    }
 
     if (dumpRegs && !dumpMemPortRegisters()) {
         log(LOG_ERROR, "Failed to dump memory port registers for diagnostics.");
@@ -659,65 +672,46 @@ bool ARMDebug::handleFault()
     return true;
 }
 
-bool ARMDebug::dumpMemPortRegisters()
-{
+bool ARMDebug::dumpMemPortRegisters() {
     uint32_t reg;
 
-    if (!apRead(MEM_IDR, reg)) return false;
+    if (!apRead(MEM_IDR, reg)) {
+        return false;
+    }
     log(LOG_ERROR, "  IDR = %08x", reg);
 
-    if (!apRead(MEM_CSW, reg)) return false;
+    if (!apRead(MEM_CSW, reg)) {
+        return false;
+    }
     log(LOG_ERROR, "  CSW = %08x", reg);
 
-    if (!apRead(MEM_TAR, reg)) return false;
+    if (!apRead(MEM_TAR, reg)) {
+        return false;
+    }
     log(LOG_ERROR, "  TAR = %08x", reg);
 
     return true;
 }
 
-uint8_t ARMDebug::packHeader(unsigned addr, bool APnDP, bool RnW)
-{
-    bool a2 = (addr >> 2) & 1;
-    bool a3 = (addr >> 3) & 1;
-    bool parity = APnDP ^ RnW ^ a2 ^ a3;
-    return (1 << 0)              |  // Start
-           (APnDP << 1)          |
-           (RnW << 2)            |
-           ((addr & 0xC) << 1)   |
-           (parity << 5)         |
-           (1 << 7)              ;  // Park
-}
-
-bool ARMDebug::evenParity(uint32_t word)
-{
-    word = (word & 0xFFFF) ^ (word >> 16);
-    word = (word & 0xFF) ^ (word >> 8);
-    word = (word & 0xF) ^ (word >> 4);
-    word = (word & 0x3) ^ (word >> 2);
-    word = (word & 0x1) ^ (word >> 1);
-    return word;
-}
-
-void ARMDebug::wireWrite(uint32_t data, unsigned nBits)
-{
+void ARMDebug::wireWrite(uint32_t data, unsigned nBits) const {
     log(LOG_TRACE_SWD, "SWD Write %08x (%d)", data, nBits);
 
     while (nBits--) {
         digitalWrite(dataPin, data & 1);
         digitalWrite(clockPin, LOW);
         data >>= 1;
+        delayMicroseconds(WIRE_DELAY_US);
         digitalWrite(clockPin, HIGH);
+        delayMicroseconds(WIRE_DELAY_US);
     }
 }
 
-void ARMDebug::wireWriteIdle()
-{
+void ARMDebug::wireWriteIdle() const {
     // Minimum 8 clock cycles.
     wireWrite(0, 32);
 }
 
-uint32_t ARMDebug::wireRead(unsigned nBits)
-{
+uint32_t ARMDebug::wireRead(unsigned nBits) const {
     uint32_t result = 0;
     uint32_t mask = 1;
     unsigned count = nBits;
@@ -728,90 +722,56 @@ uint32_t ARMDebug::wireRead(unsigned nBits)
         }
         digitalWrite(clockPin, LOW);
         mask <<= 1;
+        delayMicroseconds(WIRE_DELAY_US);
         digitalWrite(clockPin, HIGH);
+        delayMicroseconds(WIRE_DELAY_US);
     }
 
     log(LOG_TRACE_SWD, "SWD Read  %08x (%d)", result, nBits);
     return result;
 }
 
-void ARMDebug::wireWriteTurnaround()
-{
+void ARMDebug::wireWriteTurnaround() const {
     log(LOG_TRACE_SWD, "SWD Write trn");
 
     digitalWrite(dataPin, HIGH);
     pinMode(dataPin, INPUT_PULLUP);
     digitalWrite(clockPin, LOW);
+    delayMicroseconds(WIRE_DELAY_US);
     digitalWrite(clockPin, HIGH);
+    delayMicroseconds(WIRE_DELAY_US);
     pinMode(dataPin, OUTPUT);
 }
 
-void ARMDebug::wireReadTurnaround()
-{
+void ARMDebug::wireReadTurnaround() const {
     log(LOG_TRACE_SWD, "SWD Read  trn");
 
     digitalWrite(dataPin, HIGH);
     pinMode(dataPin, INPUT_PULLUP);
     digitalWrite(clockPin, LOW);
+    delayMicroseconds(WIRE_DELAY_US);
     digitalWrite(clockPin, HIGH);
+    delayMicroseconds(WIRE_DELAY_US);
 }
 
-void ARMDebug::log(int level, const char *fmt, ...)
-{
+void ARMDebug::log(int level, const char* fmt, ...) const {
     if (level <= logLevel && Serial) {
         va_list ap;
         char buffer[256];
 
         va_start(ap, fmt);
-        int ret = vsnprintf(buffer, sizeof buffer, fmt, ap);
+        vsnprintf(buffer, sizeof buffer, fmt, ap);
         va_end(ap);
 
         Serial.println(buffer);
     }
 }
 
-void ARMDebug::hexDump(uint32_t addr, unsigned count, int level)
-{
-    // Hex dump target memory to the log
-
-    if (level <= logLevel && Serial) {
-        va_list ap;
-        char buffer[32];
-        LogLevel oldLogLevel;
-
-        setLogLevel(LOG_NONE, oldLogLevel);
-
-        while (count) {
-            snprintf(buffer, sizeof buffer, "%08x:", addr);
-            Serial.print(buffer);
-
-            for (unsigned x = 0; count && x < 4; x++) {
-                uint32_t word;
-                if (memLoad(addr, word)) {
-                    snprintf(buffer, sizeof buffer, " %08x", word);
-                    Serial.print(buffer);
-                } else {
-                    Serial.print(" (error )");
-                }
-
-                count--;
-                addr += 4;
-            }
-
-            Serial.println();
-        }
-
-        setLogLevel(oldLogLevel);
-    }
-}
-
-void ARMDebug::setLogLevel(LogLevel newLevel)
-{
+void ARMDebug::setLogLevel(LogLevel newLevel) {
     logLevel = newLevel;
 }
 
-void ARMDebug::setLogLevel(LogLevel newLevel, LogLevel &prevLevel)
-{
+void ARMDebug::setLogLevel(LogLevel newLevel, LogLevel& prevLevel) {
     prevLevel = logLevel;
     logLevel = newLevel;
 }
